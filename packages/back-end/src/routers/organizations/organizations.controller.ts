@@ -1612,6 +1612,13 @@ export async function putOrganization(
         throw new Error(
           "Not supported: Updating namespaces not supported via this route.",
         );
+      } else if (k === "oauthAccess") {
+        if (!context.permissions.canManageOrgSettings()) {
+          context.permissions.throwPermissionError();
+        }
+        if (!["any", "org-apps", "none"].includes(settings.oauthAccess ?? "")) {
+          throw new Error("oauthAccess must be one of: any, org-apps, none");
+        }
       } else {
         if (!context.permissions.canManageOrgSettings()) {
           context.permissions.throwPermissionError();
