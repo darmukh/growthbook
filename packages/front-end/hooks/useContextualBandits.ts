@@ -1,5 +1,6 @@
 import { contextualBanditEndpoints } from "shared/api-endpoints";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { VisualChangesetInterface } from "shared/types/visual-changeset";
 import { useRestApi, useRestApiCall } from "@/services/restApi";
 
 /** Fetches CB docs from the REST API and returns the API shape directly. */
@@ -132,6 +133,51 @@ export function useContextualBanditLinkedFeatures(cbId: string | undefined) {
     loading: !!cbId && !error && !data,
     linkedFeatures: data?.linkedFeatures ?? [],
     environments: data?.environments ?? [],
+    error,
+    mutate,
+  };
+}
+
+/**
+ * Fetches a CB's visual changesets and returns them in the internal
+ * `VisualChangesetInterface` shape the shared Linked Changes components
+ * consume. The REST shape leaves `id`, `organization` and
+ * `urlPatterns[].include` optional; the server always sets them.
+ */
+export function useContextualBanditVisualChangesets(cbId: string | undefined) {
+  const { data, error, mutate } = useRestApi(
+    contextualBanditEndpoints.listContextualBanditVisualChangesets,
+    cbId ? { params: { id: cbId } } : null,
+  );
+
+  const visualChangesets = useMemo<VisualChangesetInterface[]>(
+    () =>
+      (data?.visualChangesets ?? []).map((vc) => ({
+        id: vc.id ?? "",
+        organization: "",
+        editorUrl: vc.editorUrl,
+        experiment: vc.experiment,
+        contextualBandit: vc.contextualBandit,
+        urlPatterns: vc.urlPatterns.map((p) => ({
+          pattern: p.pattern,
+          type: p.type,
+          include: p.include ?? true,
+        })),
+        visualChanges: vc.visualChanges.map((c) => ({
+          id: c.id ?? "",
+          description: c.description ?? "",
+          css: c.css ?? "",
+          js: c.js,
+          variation: c.variation,
+          domMutations: c.domMutations,
+        })),
+      })),
+    [data],
+  );
+
+  return {
+    loading: !!cbId && !error && !data,
+    visualChangesets,
     error,
     mutate,
   };

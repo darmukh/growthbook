@@ -1,9 +1,9 @@
-import { ExperimentInterfaceStringDates } from "shared/types/experiment";
 import { CommercialFeature } from "shared/enterprise";
 import {
   SDKCapability,
   getConnectionsSDKCapabilities,
 } from "shared/sdk-versioning";
+import { SDKConnectionInterface } from "shared/types/sdk-connection";
 import { Box, Flex, Separator, type AvatarProps } from "@radix-ui/themes";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import useSDKConnections from "@/hooks/useSDKConnections";
@@ -50,17 +50,67 @@ export const LINKED_CHANGES: Record<
   },
 };
 
+// Whatever owns the linked changes (an experiment or a contextual bandit),
+// described only by what the add affordances need to know about it.
+export type LinkedChangeTarget = {
+  project: string;
+  // Lower-case noun for copy ("experiment", "contextual bandit").
+  noun: string;
+  // Kinds this owner supports, in display order.
+  types: LinkedChange[];
+  // SDK capabilities a kind needs for THIS owner beyond the kind's own
+  // (e.g. contextual bandit visual changes also need
+  // `contextualBanditsAuto`).
+  extraSdkCapabilities?: Partial<Record<LinkedChange, SDKCapability[]>>;
+  // Replaces the generic "SDKs don't support <kind>" tooltip for a kind.
+  sdkUnsupportedCopy?: Partial<Record<LinkedChange, string>>;
+};
+
+export function linkedChangeSdkUnsupportedCopy(
+  type: LinkedChange,
+  target: LinkedChangeTarget,
+): string {
+  return (
+    target.sdkUnsupportedCopy?.[type] ??
+    `The SDKs in this project don't support ${LINKED_CHANGES[type].header}. Upgrade your SDK(s) or add a supported SDK.`
+  );
+}
+
+export function linkedChangePremiumCopy(target: LinkedChangeTarget): string {
+  return `You can add this to your draft, but you will not be able to start the ${target.noun} until upgrading.`;
+}
+
+// True when at least one SDK connection in the target's project supports
+// this kind of linked change. Feature flags need nothing special.
+export function linkedChangeSdkSupported(
+  type: LinkedChange,
+  target: LinkedChangeTarget,
+  connections: Partial<SDKConnectionInterface>[],
+): boolean {
+  const required: SDKCapability[] = [
+    ...(LINKED_CHANGES[type].sdkCapabilityKey
+      ? [LINKED_CHANGES[type].sdkCapabilityKey as SDKCapability]
+      : []),
+    ...(target.extraSdkCapabilities?.[type] ?? []),
+  ];
+  if (required.length === 0) return true;
+  const capabilities = getConnectionsSDKCapabilities({
+    connections,
+    project: target.project,
+  });
+  return required.every((c) => capabilities.includes(c));
+}
+
 const AddLinkedChangeRow = ({
   type,
   setModal,
-  experiment,
+  target,
 }: {
   type: LinkedChange;
   setModal: (open: boolean) => void;
-  experiment: ExperimentInterfaceStringDates;
+  target: LinkedChangeTarget;
 }) => {
-  const { header, cta, description, commercialFeature, sdkCapabilityKey } =
-    LINKED_CHANGES[type];
+  const { header, cta, description, commercialFeature } = LINKED_CHANGES[type];
   const { component: Icon, radixColor } = ICON_PROPERTIES[type];
   const { data: sdkConnectionsData } = useSDKConnections();
 
@@ -69,14 +119,11 @@ const AddLinkedChangeRow = ({
     ? hasCommercialFeature(commercialFeature)
     : true;
 
-  const hasSDKWithFeature =
-    type === "feature-flag" ||
-    getConnectionsSDKCapabilities({
-      connections: sdkConnectionsData?.connections ?? [],
-      project: experiment.project ?? "",
-    }).includes(sdkCapabilityKey as SDKCapability);
-
-  const isCTAClickable = hasSDKWithFeature;
+  const isCTAClickable = linkedChangeSdkSupported(
+    type,
+    target,
+    sdkConnectionsData?.connections ?? [],
+  );
 
   return (
     <Flex align="center" justify="between" gap="3" width="100%">
@@ -104,9 +151,7 @@ const AddLinkedChangeRow = ({
           commercialFeature && !hasFeature ? (
             <PremiumTooltip
               commercialFeature={commercialFeature}
-              body={
-                "You can add this to your draft, but you will not be able to start the experiment until upgrading."
-              }
+              body={linkedChangePremiumCopy(target)}
               usePortal={true}
             >
               <Button
@@ -130,7 +175,7 @@ const AddLinkedChangeRow = ({
           )
         ) : (
           <Tooltip
-            body={`The SDKs in this project don't support ${header}. Upgrade your SDK(s) or add a supported SDK.`}
+            body={linkedChangeSdkUnsupportedCopy(type, target)}
             tipPosition="top"
           >
             <Button variant="ghost" disabled>
@@ -144,57 +189,50 @@ const AddLinkedChangeRow = ({
 };
 
 export default function AddLinkedChanges({
-  experiment,
+  target,
+  canAdd,
   numLinkedChanges,
-  hasLinkedFeatures,
   setFeatureModal,
   setVisualEditorModal,
   setUrlRedirectModal,
 }: {
-  experiment: ExperimentInterfaceStringDates;
+  target: LinkedChangeTarget;
+  // Whether the owner accepts new linked changes right now (status,
+  // schedule and archive checks belong to the caller).
+  canAdd: boolean;
   numLinkedChanges: number;
-  hasLinkedFeatures?: boolean;
-  setVisualEditorModal: (state: boolean) => unknown;
-  setFeatureModal: (state: boolean) => unknown;
-  setUrlRedirectModal: (state: boolean) => unknown;
+  // A kind whose setter is missing (the user can't create that kind) is
+  // left out of the list.
+  setFeatureModal?: (state: boolean) => unknown;
+  setVisualEditorModal?: (state: boolean) => unknown;
+  setUrlRedirectModal?: (state: boolean) => unknown;
 }) {
-  if (experiment.status !== "draft") return null;
-  if (experiment.nextScheduledStatusUpdate) return null;
-  if (experiment.archived) return null;
+  if (!canAdd) return null;
   // Already has linked changes
   if (numLinkedChanges && numLinkedChanges > 0) return null;
 
-  const sections = {
-    "feature-flag": {
-      render: !hasLinkedFeatures,
-      setModal: setFeatureModal,
-    },
-    "visual-editor": {
-      render: !experiment.hasVisualChangesets,
-      setModal: setVisualEditorModal,
-    },
-    redirects: {
-      render: !experiment.hasURLRedirects,
-      setModal: setUrlRedirectModal,
-    },
+  const setModalFor: Record<
+    LinkedChange,
+    ((state: boolean) => unknown) | undefined
+  > = {
+    "feature-flag": setFeatureModal,
+    "visual-editor": setVisualEditorModal,
+    redirects: setUrlRedirectModal,
   };
-
-  const possibleSections = Object.keys(sections);
+  const sections = target.types.flatMap((type) => {
+    const setModal = setModalFor[type];
+    return setModal ? [{ type, setModal }] : [];
+  });
+  if (sections.length === 0) return null;
 
   return (
     <Box className="appbox mb-0" p="4" mt="2" mb="0">
-      {possibleSections.map((s, i) => {
-        return (
-          <Box key={s}>
-            <AddLinkedChangeRow
-              type={s as LinkedChange}
-              setModal={sections[s].setModal}
-              experiment={experiment}
-            />
-            {i < possibleSections.length - 1 && <Separator size="4" my="3" />}
-          </Box>
-        );
-      })}
+      {sections.map(({ type, setModal }, i) => (
+        <Box key={type}>
+          <AddLinkedChangeRow type={type} setModal={setModal} target={target} />
+          {i < sections.length - 1 && <Separator size="4" my="3" />}
+        </Box>
+      ))}
     </Box>
   );
 }
